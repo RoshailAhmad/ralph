@@ -287,7 +287,7 @@ class Licence(Regionalizable, AdminAbsoluteUrlMixin, PriceMixin, BaseObject):
     def free(self):
         if not self.pk:
             return 0
-        return self.number_bought - self.used
+        return self.number_bought - self.used + 1
 
     free._permission_field = "number_bought"
 
