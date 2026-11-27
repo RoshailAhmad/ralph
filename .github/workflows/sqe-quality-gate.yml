@@ -126,9 +126,55 @@ jobs:
       - name: Analyse and enforce SQE-Gate
         run: bash tests/team/tools/sonar_ci.sh
 
+  api-tests:
+    name: api-tests (Module 2)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ralph_ng, POSTGRES_PASSWORD: ralph_ng, POSTGRES_DB: ralph_ng }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U ralph_ng" --health-interval 5s --health-retries 20
+    env:
+      DJANGO_SETTINGS_MODULE: ralph.settings.dev
+      DATABASE_OPTIONS: "{}"
+      BASE_URL: http://127.0.0.1:8000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with: { python-version: "3.10" }
+      - run: sudo apt-get update && sudo apt-get install -y libmysqlclient-dev libldap2-dev libsasl2-dev pkg-config
+      - name: Install Ralph (dev settings) + test tools
+        run: |
+          uv sync --group test --group dev
+          uv pip install pytest requests pyyaml
+      - name: Migrate and seed synthetic data
+        run: |
+          uv run ralph migrate --noinput
+          uv run ralph shell < tests/team/seed/seed_sqe.py
+      - name: Start Ralph in the background
+        run: |
+          nohup uv run ralph runserver 127.0.0.1:8000 > runserver.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf -o /dev/null "$BASE_URL/login/" && exit 0; sleep 2; done
+          cat runserver.log; exit 1
+      - name: Regenerate EP/BVA data from the spec and check it is up to date
+        run: |
+          .venv/bin/python tests/team/generator/gen_cases.py
+          git diff --exit-code tests/team/generator/out/cases.json
+      - name: API tests
+        working-directory: tests/team/api
+        run: ../../../.venv/bin/pytest -c pytest.ini -rx --junitxml=../reports/api-junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-reports
+          path: |
+            tests/team/reports/api-junit.xml
+            runserver.log
+
   deploy:
     name: deploy (blocked unless all gates pass)
-    needs: [unit-tests, mutation, sonarqube]
+    needs: [unit-tests, mutation, sonarqube, api-tests]
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     environment: staging
